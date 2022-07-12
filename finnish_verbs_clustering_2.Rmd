@@ -1,0 +1,863 @@
+---
+title: "Dimensionality Reduction and Clustering with Finnish Verbs"
+author: "Paul A. Pope"
+date: "3/8/2022"
+#bibliography: references.bib
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = TRUE, message = FALSE, warning = TRUE)
+
+set.seed(111)
+
+setwd("/Users/paulp/Desktop/UEF/advanced_statistical_analysis_linguistics")
+#options(encoding="utf-8")
+
+#libraries
+library(metricsgraphics)
+library(stringi)
+library(stringr)
+library(descr) #need?
+library(ggplot2) #plots
+library(docstring)
+library(fastTextR) # pretrained vector loading
+library(DT) #for displaying tabular data inline
+library(data.table)
+
+```
+
+```{css, echo=FALSE}
+  h1, h2 {
+  text-align: center;
+}
+```
+# Welcome
+
+Language models, which use n-dimensional embeddings trained by ML algorithms, are fundamental to the infrastructure of NLP applications such as machine translation tools, plagiarism detection, and information retrieval. Because language models have gotten so large in recent years, now with billions and trillions of parameters, it is important to explore to what extent abbreviated versions of these models are intuitive or 'human-readable'. Using dimensionality reduction and k-means clustering on [FastText](https://github.com/jmyrberg/finnish-word-embeddings) pre-trained word embeddings of a subset of spoken Finnish words[@jmyrberg_2019], we:
+
+1. Explore language aspects the reduced-dimensional model is capable of capturing,
+2. Describe patterns evident after clustering the reduced model,
+3. Discuss limitations of our methods and data, and
+4. Inform the reader of directions for further exploration.
+
+For readers in English, Finnish words have been roughly glossed with Google Translate output. Please note that, while this is useful for observing general patterns, it contains errors.
+
+# The Data
+
+The most frequent Finnish verb lemmas were sorted from the Kven lemma frequency list for Finnish compiled by researchers at UiT The Arctic University of Norway []. Isolating a single part of speech and using only lemmas allows us to see whether semantic likeness, rather than word form, results in intuitive clusters. Note that the list was generated and contains some errors.
+
+```{r}
+
+list = read.csv('verbs2.txt', header=T)
+
+#isolate verbs
+verbs = data.frame(lemma = list)
+
+```
+
+Next, I loaded the corresponding fastText[@jmyrberg_2019] 300-dimensional word vector for each lemma and added a Google translate gloss to cope with my inferior Finnish vocabulary.
+
+
+```{r}
+
+# The fastTextR library works for efficient loading and matching
+model <- ft_load('cc.fi.300.bin')
+
+main_data <- cbind(
+  verbs, 
+  ft_word_vectors(
+    model, 
+    verbs[,1]))
+
+dims <- dim(main_data)
+
+#add the gloss
+gloss <- read.csv('gloss_verbs2.txt', header=T)
+gloss <- gloss$gloss
+gloss <- setNames(as.data.frame(gloss), c('Gloss'))
+
+main_data <- cbind(gloss, main_data)
+
+datatable(main_data, options=list(pageLength=7))
+
+```
+
+# Dimensionality Reduction
+
+Here, we explore multiple parameterizations of PCA, tSNE, and UMAP. 
+
+## PCA
+
+Two methods of Principle Component Analysis (PCA) are *Spectral Decomposition* (SD) and *Singular Value Decomposition* (SVD). SD uses the covariance and correlation between parameters (embedding columns), while SVD uses the covariance and correlation between tokens (rows). Here we use SVD for its higher numerical accuracy [@sthda_2017]. Initially, we examine scree plots, which tell us how much variance is captured in each dimension of the reduced models.
+
+```{r}
+
+library(plotly) #for plots
+library(factoextra) #for eigenvalues
+
+# Generate 3D model with PCA-SVD
+set.seed(111)
+pca_vecs <- prcomp(main_data[,3:dims[2]], scale=FALSE)
+
+set.seed(111)
+pca_vecs_scl <- prcomp(main_data[,3:dims[2]], scale=TRUE)
+
+#assign 3 dimensions to a new dataframe
+reduced_data <- cbind(main_data[,1:2], as.data.frame(pca_vecs$x[,1:3], col.names = c('PCA1', 'PCA2', 'PCA3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(pca_vecs_scl$x[,1:3]), c('PCA1.scl', 'PCA2.scl', 'PCA3.scl')))
+
+#layered scree plots for scaled and unscaled PCA. Alternatively, use fviz_pca for simplified plotting
+
+scree <- ggplot() +
+  
+  geom_bar(data=get_eig(pca_vecs)[1:10,], aes(x=c(1:10), y=variance.percent), stat = 'identity', fill='lightblue') +
+  
+  geom_bar(data=get_eig(pca_vecs_scl)[1:10,], aes(x=c(1:10), y=variance.percent), stat='identity', fill='steelblue') +
+  
+  theme_minimal() 
+
+
+scree
+
+```
+
+Scaled PCA (dark blue) captures less of the variance in the first two dimensions in this case. scaled=TRUE creates unit variance, so all the parameters have the same standard deviation. Since FastText parameters are already on scale [-1,1], this step was not actually necessary. But with other independent variables with diverse means and variances, it would be essential. Let's take a look at the scatterplots:
+
+```{r include=FALSE}
+
+library(RColorBrewer) # coloring of markers
+
+#Set default Parameters for Graphing
+
+# Random colors help the markers stand out.
+rndm = runif(dim(reduced_data)[1], 0, 1)
+
+#show both Gloss and Finnish words
+tok_and_gloss = paste(reduced_data$Gloss, reduced_data$lemma, sep='\n')
+
+
+#function for delivering the plots
+reduced_plot <- function(data, title, text, color_var, scheme='YlGnBu', showscale=F, reversescale=T) {
+  
+  scatterplot <- data %>%
+  
+  plot_ly(type='scatter3d', mode='markers', x=data[,1], y=data[,2], z=data[,3], text=text, hoverinfo='text', marker = list(color=color_var, colorscale=scheme, showscale = showscale, reversescale=reversescale)) %>% 
+  
+  add_markers() %>%
+  
+  layout(title = paste('\n\n', title),
+                      scene = list(xaxis = list(title = 'V1'),
+                                   yaxis = list(title = 'V2'),
+                                   zaxis = list(title = 'V3')),
+         showlegend = FALSE
+                      )  
+  return(scatterplot)
+}
+
+pca_unscl <- reduced_data[,3:5]
+pca_scl <- reduced_data[,6:8]
+
+pca_unscl_plt <- reduced_plot(pca_unscl, "Unscaled PCA", tok_and_gloss, color_var = rndm)
+```
+
+```{r include=TRUE}
+pca_unscl_plt
+```
+
+
+## tSNE
+
+In *t-Distributed Stochastic Neighbor Embedding* (tSNE), a probability distribution between tokens is calculated such that similar token pairs (with low Euclidean distance) are assigned high probability, and dissimilar (high distance) token pairs are assigned low probability. The algorithm uses gradient descent to minimize the relative entropy (KL-divergence) between the reduced dimensional model and the original. Much of tSNE's power results from how it adapts search bandwidth based on the density of the data: when we set a value for perplexity, this tells the model how far to look for nearest neighbors in its construction of the model. 
+
+Although it is generally considered more powerful than PCA, it is essential to know how parameters effect the outcome [@wattenberg_viegas_johnson_2016]: patterns and clusters may look more defined than they are meaningful. Learning rate and max iterations can impact how well gradient descent optimizes the model: we have to find a good balance, where we produce generalizable results without overfitting. 
+
+By default, rTSNE uses an initial PCA step. This helps speed up the algorithm for large datasets. Here, we try both for comparison. Setting a high perplexity will bring out more global structures (similar to UMAP), but takes a lot longer to converge [@understanding_umap_2022]. We run two rounds, with high perplexity = (nrows-1)/6, and low perplexity = high perplexity / 6.
+
+```{r include=FALSE}
+
+library(Rtsne)
+
+high_perp = floor((dims[1]-1)/6)
+low_perp = high_perp/6
+
+set.seed(111)
+tsne_pca_high <- Rtsne(main_data[,3:302], dims = 3, perplexity = high_perp, pca=TRUE)
+
+set.seed(111)
+tsne_pca_low <- Rtsne(main_data[,3:302], dims = 3, perplexity = low_perp, pca=TRUE)
+
+set.seed(111)
+tsne_high <- Rtsne(main_data[,3:302], dims = 3, perplexity = high_perp, pca=FALSE)
+
+set.seed(111)
+tsne_low <- Rtsne(main_data[,3:302], dims = 3, perplexity = low_perp, pca=FALSE)
+
+#append reductions to the reduced dataframe
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(tsne_pca_high$Y), c('tSNE1.PCA.max', 'tSNE2.PCA.max', 'tSNE3.PCA.max')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(tsne_pca_low$Y), c('tSNE1.PCA.low', 'tSNE2.PCA.low', 'tSNE3.PCA.low')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(tsne_high$Y), c('tSNE1.high', 'tSNE2.high', 'tSNE3.high')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(tsne_low$Y), c('tSNE1.low', 'tSNE2.low', 'tSNE3.low')))
+
+#create plots
+
+tsne_pca_high <- reduced_data[9:11]
+tsne_pca_low <- reduced_data[12:14]
+tsne_high <- reduced_data[15:17]
+tsne_low <- reduced_data[18:20]
+
+tsne_pca_high_plt <- reduced_plot(tsne_pca_high, 'tSNE with PCA: High Perplexity', text=tok_and_gloss, color_var=rndm)
+
+tsne_pca_low_plt <- reduced_plot(tsne_pca_low, 'tSNE with PCA: Low Perplexity', text=tok_and_gloss, color_var=rndm)
+
+tsne_high_plt <- reduced_plot(tsne_high, 'tSNE: High Perplexity', text=tok_and_gloss, color_var=rndm)
+
+tsne_low_plt <- reduced_plot(tsne_low, 'tSNE: Low Perplexity', text=tok_and_gloss, color_var=rndm)
+
+```
+
+```{r include=TRUE}
+# display plots
+
+tsne_pca_high_plt #better clusters here
+
+tsne_pca_low_plt #even better
+
+tsne_high_plt
+
+tsne_low_plt #good ones here too
+
+```
+
+## UMAP
+
+UMAP is better optimized for large datasets, performing reduction in just a fraction of time compared to tSNE. Many researchers prefer it for how its algorithm balances local and global information, keeping clusters far apart and more distinct [@understanding_umap_2022].
+
+UMAP uses a search radius to find n_neighbors to each point. After constructing an initial graph of these connections in high dimensions, it reduces this to lower dimensions, representing the graph connections with the minimum distance parameter. Low minimum distance clusters the connections more closely, whereas higher minimum distance values spread the points out. 
+
+Because UMAP skews the data to balance local and global representation, it is common to misinterpret random noise as a meaningful cluster. For this same reason, the distance between clusters is not meaningful in itself [@understanding_umap_2022].
+
+Here, we try four configurations of UMAP in addition to the default, changing n_neighbors and min_dist.
+
+```{r include=FALSE}
+
+library(umap) # dimensionality reduction
+
+# Do six unique configurations
+
+config1 <- umap.defaults
+config1$random_state = 111
+config1$n_components = 3
+
+umap_dflt <- umap(main_data[,3:302], config=config1)
+
+config2 <- config1
+config2$n_neighbors <- 5
+
+umap_2 <- umap(main_data[,3:302], config=config2)
+
+config3 <- config2
+config3$n_neighbors <- 60
+
+umap_3 <- umap(main_data[,3:302], config=config3)
+
+config4 <- config2
+config4$min_dist <- 0.5
+
+umap_4 <- umap(main_data[,3:302], config=config4)
+
+config5 <- config3
+config5$min_dist <- 0.5
+
+umap_5 <- umap(main_data[,3:302], config=config5)
+
+umap_6 <- umap(main_data[,3:302], n_neighbors = 8, n_components = 3, min_dist=0.001)
+
+
+#append results to reduced_data
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_dflt$layout), c('umap.dflt.1', 'umap.dflt.2', 'umap.dflt.3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_2$layout), c('umap.2.1', 'umap.2.2', 'umap.2.3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_3$layout), c('umap.3.1', 'umap.3.2', 'umap.3.3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_4$layout), c('umap.4.1', 'umap.4.2', 'umap.4.3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_5$layout), c('umap.5.1', 'umap.5.2', 'umap.5.3')))
+
+reduced_data <- cbind(reduced_data, setNames(as.data.frame(umap_6$layout), c('umap.6.1', 'umap.6.2', 'umap.6.3')))
+
+
+# create plots
+
+umap_dflt <- reduced_data[21:23]
+umap_2 <- reduced_data[24:26]
+umap_3 <- reduced_data[27:29]
+umap_4 <- reduced_data[30:32]
+umap_5 <- reduced_data[33:35]
+umap_6 <- reduced_data[36:38]
+
+umap_dflt_plt <- reduced_plot(umap_dflt, 'UMAP: Defaut Config', text=tok_and_gloss, color_var=rndm, scheme='YlGnBu', showscale=F, reversescale=T)
+
+umap_2_plt <- reduced_plot(umap_2, 'UMAP: 2nd Config', text=tok_and_gloss, color_var=rndm, scheme='YlGnBu', showscale=F, reversescale=T)
+
+umap_3_plt <- reduced_plot(umap_3, 'UMAP: 3rd Config', text=tok_and_gloss, color_var=rndm, scheme='YlGnBu', showscale=F, reversescale=T)
+
+umap_4_plt <- reduced_plot(umap_4, 'UMAP: 4th Config', text=tok_and_gloss, color_var=rndm, scheme='YlGnBu', showscale=F, reversescale=T)
+
+umap_5_plt <- reduced_plot(umap_5, 'UMAP: 5th Config', text=tok_and_gloss, color_var=rndm, scheme='YlGnBu', showscale=F, reversescale=T)
+
+umap_6_plt <- reduced_plot(umap_6, "UMAP: 6th Config", tok_and_gloss, color_var=rndm)
+```
+
+```{r include=TRUE}
+# display plots
+
+umap_dflt_plt #good clusters here
+umap_2_plt
+umap_3_plt
+umap_4_plt
+umap_5_plt
+umap_6_plt
+
+```
+
+You'll notice that UMAP default, as well as tSNE+PCA with low perplexity delivered the most intuitive models in terms of visible clusters. Next we will explore clustering and data frame sorting to describe what relationships the dimensions seem to capture.
+
+
+# Clustering 
+
+As you saw in Dimensionality Reduction, the projection of n dimensions onto a lower-dimensional subspace enables us to visualize where words the words are in 3D representation. If the representation is meaningful, related words will be closer together in general: that is, the Euclidean distance between two points should indicate to what degree the words are related. 
+
+You probably noted chunks or clusters with gaps between them in the reduced data. One common, unsupervised method for finding these clusters is the K-means algorithm. While this can help us distinguish overall categories in our word set, hierarchical clustering breaks clusters into binary trees, resulting in more detailed groupings which can capture related pairs and smaller groups.
+
+## K-means
+
+K-means is a 'hard' clustering method, meaning it assigns each datum to one of k sets, calculating k cluster centroids such that the within-cluster variances are minimized. To find the 'optimal' number of clusters, I used NbClust R package. 
+
+```{r}
+
+library(cluster)
+library(ClusterR)
+library(NbClust) # find optimal number of clusters
+
+fviz_nbclust(main_data[3:302], kmeans, k.max=20)
+
+```
+
+This recommends a very low number of clusters, but I wanted to see more definition in how the words are grouped. I settled on k=12 so that clusters would be smaller and patterns hopefully more transparent. This is also convenient for visualization, as the largest of the discrete palettes in R contain 12 colors. 
+
+The dataset of one cluster is also posted below each chart. Try sorting column-wise to see which words end up near each other in each of the 3 dimensions: sometimes this is more apparent and useful than the plot itself, as words near each other in one dimension are spread apart in another, and don't cluster well.
+
+```{r}
+
+#run clustering
+
+set.seed(111)
+main_data_clust <- kmeans(main_data[3:302], 12)
+main_data$clusters <- main_data_clust$cluster
+
+set.seed(111)
+tsne_pca_low_clust <- kmeans(tsne_pca_low, 12)
+tsne_pca_low$clusters <- tsne_pca_low_clust$cluster
+
+set.seed(111)
+tsne_pca_low_clust_plt <- reduced_plot(tsne_pca_low, "tSNE with PCA: Low Perplexity", tok_and_gloss, color_var = tsne_pca_low$clusters)
+
+set.seed(111)
+umap_dflt_clust <- kmeans(umap_dflt, 12)
+umap_dflt$clusters <- umap_dflt_clust$cluster
+
+umap_dflt_clust_plt <- reduced_plot(umap_dflt, "UMAP: Default Config", tok_and_gloss, color_var = ~clusters)
+
+
+set.seed(111)
+umap_3_clust <- kmeans(umap_3, 12)
+umap_3$clusters <- umap_3_clust$cluster
+
+umap_3_clust_plot <- reduced_plot(umap_3, "UMAP: 3rd Config", tok_and_gloss, color_var = ~clusters)
+
+
+set.seed(111)
+umap_6_clust <- kmeans(umap_6[1:3], 12)
+umap_6$clusters <- umap_6_clust$cluster
+
+umap_6_clust_plot <- reduced_plot(umap_6, "UMAP: 6th Config", tok_and_gloss, color_var = ~clusters)
+
+# create Data tables
+
+a <- cbind(gloss, tsne_pca_low)
+a <- datatable(a[order(a$clusters, a$tSNE1.PCA.low),])
+
+b <- cbind(gloss, umap_dflt)
+b <- datatable(b[order(b$clusters, b$umap.dflt.1),])
+
+c <- cbind(gloss, umap_3)
+c <- datatable(c[order(c$clusters, c$umap.3.1),])
+
+d <- cbind(gloss, umap_6)
+d <- datatable(d[order(d$clusters, d$umap.6.1),])
+
+# Show Plots and Data
+
+tsne_pca_low_clust_plt 
+a # some clear semantic relationships in sorted clusters
+
+umap_dflt_clust_plt #clearer
+b # again, clear semantic relationships here
+
+umap_3_clust_plot #clear
+c # seems a bit nonsensical
+
+umap_6_clust_plot
+d # again, semantic relationships unclear
+
+```
+
+Notice that the semantic relationships in UMAP3 and 6 are not as clear in the tabular data, whereas the tSNE clusters and default UMAP sort nicely into related words in the tables. One can easily imagine the words which are listed next to each other appearing in the same paragraph of text. 
+
+
+## DBSCAN
+
+Density-based clustering can find clusters of different shapes and sizes [@datanovia_2018] without using centroids, which assume data within clusters is normally distributed.
+
+```{r}
+library(fpc) # DBC algorithm 
+
+set.seed(111)
+main_data_dbc <- dbscan(main_data[4:303], eps=10, MinPts = 5)
+main_data$dbc <- main_data_dbc$cluster
+
+set.seed(111)
+tsne_pca_low_dbc <- dbscan(tsne_pca_low, eps=3.1, MinPts = 5)
+tsne_pca_low$dbc <- tsne_pca_low_dbc$cluster
+
+tsne_pca_low_dbc_plt <- reduced_plot(tsne_pca_low, "tSNE with PCA: Low Perplexity: DBC", tok_and_gloss, color_var = ~dbc)
+
+set.seed(111)
+umap_dflt_dbc <- dbscan(umap_dflt, eps=0.4, MinPts=5)
+umap_dflt$dbc <- umap_dflt_dbc$cluster
+
+umap_dflt_dbc_plt <- reduced_plot(umap_dflt, "UMAP: Default Config: DBC", tok_and_gloss, color_var = ~dbc)
+
+set.seed(111)
+umap_3_dbc <- dbscan(umap_3, eps=0.5, MinPts = 5)
+umap_3$dbc <- umap_3_dbc$cluster
+
+umap_3_dbc_plt <- reduced_plot(umap_3, "UMAP: 3rd Config: DBC", tok_and_gloss, color_var = ~dbc)
+
+set.seed(111)
+umap_6_dbc <- dbscan(umap_6, eps = 0.2, MinPts = 5)
+umap_6$dbc <- umap_6_dbc$cluster
+  
+umap_6_dbc_plt <- reduced_plot(umap_6, "UMAP: 6th Config: DBC", tok_and_gloss, color_var = ~dbc)
+
+#generate tables
+
+a <- cbind(gloss, tsne_pca_low)
+a <- datatable(a[order(-a$dbc, a$tSNE1.PCA.low),])
+
+b <- cbind(gloss, umap_dflt)
+b <- datatable(b[order(-b$dbc, b$umap.dflt.1),])
+
+c <- cbind(gloss, umap_3)
+c <- datatable(c[order(-c$dbc, c$umap.3.1),])
+
+d <- cbind(gloss, umap_6)
+d <- datatable(d[order(-d$dbc, d$umap.6.1),])
+
+#Display Plots and tables
+
+tsne_pca_low_dbc_plt #interesting visually, but useful?
+a
+umap_dflt_dbc_plt #some meaningful patterns in denser clusters
+b
+umap_3_dbc_plt #looks more like kmeans
+c
+umap_6_dbc_plt 
+d
+
+```
+
+Density-based clustering answers a different question: groups of points with a similar degree of relatedness are assigned to the same cluster, so clusters can be spread throughout the data. In each case, you can see the least dense 'cluster' stretching through the data points. As such, this captures points in groups per their 'degree of relatedness' rather than minimizing the distance from other individual points and assigning a centroid.
+
+When looking at the sorted tables, this becomes even more clear: the largest, '0' dbc cluster contains random words which are from a mixture of k-means clusters calculated previously, and there is no strong relationship amonst items; whereas the smaller, 'tighter' dbc clusters toward the top of the data are very clearly related and are almost perfect subsets of the k-means clusters. This could be a good way of filtering noisy words from data if you are only interested in highly related tokens.
+
+
+## Fuzzy Clustering
+
+Fuzzy clustering, a 'soft' method, models uncertainty in cluster assignment: data points are assigned a probability of belonging to a given cluster. The fclust package uses fuzzy k-means as an algorithm. Here we use the default configurations with 12 clusters, so we can compare with the hard clustering methods above.
+
+For visualization, points were darkened or given transparency based on the certainty that they belong to the cluster assigned. But fclust also provides the probabilities that each point belongs to each other cluster, k*N total values. In the data tables, tokens are sorted by cluster (fc) and then by the probabily that they belong to that cluster (fc_prb). So the tokens at the top of each cluster group should have a high degree of relatedness.
+
+```{r include=FALSE}
+
+library(fclust) # fuzzy clustering function
+library(grDevices) # needed for fclust
+
+#run fuzzy clustering 
+tsne_pca_low_fc <- Fclust(tsne_pca_low[1:3], 12, type='standard')
+umap_dflt_fc <- Fclust(umap_dflt[1:3], 12, type='standard')
+umap_3_fc <- Fclust(umap_3[1:3], 12, type='standard')
+umap_6_fc <- Fclust(umap_6[1:3], 12, type='standard')
+
+```
+
+```{r}
+
+#append the cluster data to the dataframes
+
+tsne_pca_low$fc_no <- tsne_pca_low_fc$clus[,1]
+tsne_pca_low$fc_prb <- tsne_pca_low_fc$clus[,2]
+
+umap_dflt$fc_no <- umap_dflt_fc$clus[,1]
+umap_dflt$fc_prb <- umap_dflt_fc$clus[,2]
+
+umap_3$fc_no <- umap_3_fc$clus[,1]
+umap_3$fc_prb <- umap_3_fc$clus[,2]
+
+umap_6$fc_no <- umap_6_fc$clus[,1]
+umap_6$fc_prb <- umap_6_fc$clus[,2]
+
+
+#load a preset color scheme from R
+library(colorspace) 
+clrs = brewer.pal(12, 'Set3')
+
+
+#Customize the plot function
+fuzzy_plot <- function(data, title, text, color_var = clrs, colors = list(), scheme='YlGnBu', showscale=F, reversescale=T) {
+  
+  scttrplt <- 
+  
+  plot_ly(data, 
+          type='scatter3d', 
+          mode='markers', 
+          x=data[,1], 
+          y=data[,2], 
+          z=data[,3], 
+          text=text,
+          hoverinfo='text', 
+          marker = list(
+            #Create the color, + darkness, - transparency for high-probability points
+            color = darken(
+            alpha(
+              clrs[data$fc_no], 
+              data$fc_prb), 
+            data$fc_prb),
+                        showscale = showscale, 
+                        reversescale=reversescale)
+          ) %>% 
+
+  add_markers() %>%
+    
+  layout(title = paste('\n\n', title),
+                      scene = list(xaxis = list(title = 'V1'),
+                                   yaxis = list(title = 'V2'),
+                                   zaxis = list(title = 'V3')),
+         showlegend = FALSE
+                      )
+  return(scttrplt)
+}
+
+# generate data tables
+
+a <- cbind(gloss, tsne_pca_low[,4:7])
+a <- datatable(a[order(a$fc_no, -a$fc_prb),])
+
+b <- cbind(gloss, umap_dflt[,4:7])
+b <- datatable(b[order(b$fc_no, -b$fc_prb),])
+
+c <- cbind(gloss, umap_3[,4:7])
+c <- datatable(c[order(c$fc_no, -c$fc_prb),])
+
+d <- cbind(gloss, umap_6[,4:7])
+d <- datatable(d[order(d$fc_no, -d$fc_prb),])
+
+#generate and display plots with tables
+
+fuzzy_plot(tsne_pca_low, "tSNE with PCA, Low Perplexity: Fuzzy Clustering", text=tok_and_gloss, color_var = clrs) #best so far
+a
+
+fuzzy_plot(umap_dflt, "UMAP: Default Config, Fuzzy Clustering", text=tok_and_gloss, color_var = clrs) #some more good parts near cluster centers
+b
+
+fuzzy_plot(umap_3, "UMAP: 3rd Config, Fuzzy Clustering", text=tok_and_gloss, color_var = clrs)
+c
+
+fuzzy_plot(umap_6, "UMAP: 6th Config, Fuzzy Clustering", text=tok_and_gloss, color_var = clrs)
+d
+
+
+```
+
+If you know exactly how many clusters you are looking for and you are only concerned with the items which are highly related, this might be a good method. But many points and would-be clusters at the outer reaches of the centroids are attenuated to the point that they're invisible. 
+
+
+## Hierarchical Clustering
+
+Hierarchical methods assign layers of clusters which can be represented in a dendrogram. 
+
+Visualization techniques for hierarchical clustering of large datasets is challenging. Interactive plots that enable 'expanding' nodes of the grid by clicking tend to hide the data until we are deep within the hierarchical structure, clearly inappropriate for binary trees. Given the size of our data, these are very slow to compute and would take hundreds of clicks to get to the leaf nodes of the graph. Graphs that show the full tree structure tend to be hard to navigate and zoom for viewing detailed relationships. After some experimentation, I've settled on a simple dendrogram from the phylo library, split into 12 subtrees.
+
+```{r}
+
+library(networkD3)
+library(treemap)
+library(data.tree)
+library(ggraph)
+set.seed(111)
+
+# run k-means clustering on existent k-means clusters, and cluster the centroids as well
+# this creates a 'hierarchy' of three layers.
+
+opt_clust <- function(data, min=3, max=12) {NbClust(data,distance='euclidean',
+          min.nc=min, max.nc=max,method='kmeans', index='kl')}
+
+split_clusters <- function(data) {
+  
+  hier <- data.frame(spr = NA, cls = data$clusters, subs = NA, sprcntrd1 =NA, sprcntrd2 =NA, sprcntrd3 =NA, cntrd1 = NA, cntrd2 = NA, cntrd3 = NA, sbcntrd1=NA, sbcntrd2=NA,sbcntrd3=NA)
+  
+  rows = dim(data)[1]
+  centroids = data.frame(cntrd1=c(), cntrd2=c(), cntrd3=c(), clstr=c())
+  
+  #subclusters
+  for (i in 1:12) {
+    clstr = data[data$clusters==i,1:3]
+    opt <- as.integer(opt_clust(clstr)$Best.nc[[1]])
+    ks <- kmeans(clstr[,1:3], centers=opt)
+    hier$subs[which(hier$cls==i)] <- ks$cluster
+    
+    cntrd = colMeans(clstr)
+    hier$cntrd1[which(hier$cls==i)] <- cntrd[1]
+    hier$cntrd2[which(hier$cls==i)] <- cntrd[2]    
+    hier$cntrd3[which(hier$cls==i)] <- cntrd[3] 
+    
+    for (j in 1:opt){
+      hier$sbcntrd1[which(hier$subs==j)] = ks$centers[j,1]
+      hier$sbcntrd2[which(hier$subs==j)] = ks$centers[j,2]
+      hier$sbcntrd3[which(hier$subs==j)] = ks$centers[j,3]
+    }
+  }
+ return(hier)
+}
+
+  #superclusters  
+join_clusters <- function(hier){
+  
+  centroids = as.data.frame(
+    unique(
+      cbind(
+        hier$cls,
+        hier$cntrd1,
+        hier$cntrd2,
+        hier$cntrd3)))
+  
+  colnames(centroids)[1] = 'cls'
+  opt2 <- as.integer(NbClust(centroids[,2:4],distance='euclidean',
+          min.nc=3, max.nc=10, method='kmeans', index='kl')$Best.nc[[1]])
+  sp_ks <- kmeans(centroids[,2:4], opt2, nstart=25)
+  spr <- sp_ks$cluster
+  centroids<- cbind(centroids, spr)
+  #return(centroids)
+
+  for (b in 1:12){
+    for (a in 1:dim(hier)[1]){
+      if (hier$cls[a] ==centroids$cls[b]) {
+        hier$spr[a] <- centroids$spr[b]
+        hier$sprcntrd1[a] = sp_ks$centers[centroids$spr[b],1]
+        hier$sprcntrd2[a] = sp_ks$centers[centroids$spr[b],2]
+        hier$sprcntrd3[a] = sp_ks$centers[centroids$spr[b],3]
+      }
+    }
+  }
+  return(hier)
+  }
+
+test1 <- split_clusters(tsne_pca_low)
+test1 <- join_clusters(test1)
+test1$spr <- as.factor(test1$spr)
+test1$cls <- as.factor(test1$cls)
+test1$subs <- as.factor(test1$subs)
+
+
+library(igraph)
+
+multilevel_tsne <- cbind(test1, tsne_pca_low)
+
+#Customize the plot function
+hier_plot <- function(data, title, text, color_var = clrs, symbols=symbols, #colors = list(), scheme='YlGnBu', 
+                      showscale=F, reversescale=T) {
+  
+  scttrplt <- 
+  
+  plot_ly(data, 
+          type='scatter3d', 
+          mode='markers', 
+          x=data[,13], 
+          y=data[,14], 
+          z=data[,15], 
+          text=text,
+          symbols = symbols,
+          hoverinfo='text', 
+          marker = list(
+            #Create color as a function of cluster assignment
+             color = rgb(
+                1/as.numeric(data$spr),
+                as.numeric(data$cls)/max(as.numeric(data$cls)),
+                -(((as.numeric(data$subs)-1)/(11-1))-1/2)^2+1),
+              showscale = showscale, 
+              reversescale=reversescale)
+          ) %>% 
+
+  add_markers() %>%
+  
+  layout(title = paste('\n\n', title),
+                      scene = list(xaxis = list(title = 'V1'),
+                                   yaxis = list(title = 'V2'),
+                                   zaxis = list(title = 'V3')),
+         showlegend = FALSE
+                      )
+  return(scttrplt)
+}
+
+
+subclust_plot <- hier_plot(
+  multilevel_tsne,
+  title='3-Layer clustering', 
+  symbols=symbols, 
+  text=tok_and_gloss,
+  )
+
+# Dendrogram 
+library(ape)
+library(ggdendro)
+library(dendextend)
+
+#create gloss without duplicate values, required for labeling
+gloss2 <- c(mapply(as.character, gloss))
+
+for (i in 1:(length(gloss2)-1)) {
+  for (j in (i+1):(length(gloss2))) {
+    n = 1
+    if (gloss2[i]==gloss2[j]) {
+      gloss2[j] = paste(gloss2[j], as.character(n), sep = ' ')
+      n=n+1
+    }
+  }
+}
+
+#row.names(tsne_pca_low) <- gloss[,1]
+c <- tsne_pca_low
+row.names(c) <- as.list(gloss2)
+
+d <- c %>% 
+  scale() %>% 
+  dist(method="euclidean") %>%
+  stats::hclust(method='ward.D2') %>%
+  as.dendrogram()
+
+
+k <- 12
+cols <- rainbow_hcl(k)
+dend <- color_branches(d, k=k)
+groups <- cutree(dend, k=12, order_clusters_as_data = FALSE)
+
+labels_dend <- labels(d)
+dends <- list()
+for(i in 1:k) {
+  labels_to_keep <- labels_dend[i != groups]
+  dends[[i]] <- dendextend::prune(dend, labels_to_keep)
+}
+
+
+for(i in 1:k) {
+
+  plot.phylo(
+    as.phylo(dends[[i]]), 
+    #x.lim=
+    type="fan", 
+    no.margin=TRUE, 
+    tip.color = darken(cols[i], 0.5),
+    edge.color = cols[i],
+    #main = paste0("cluster ", i)
+    )
+  
+    title(paste0("Cluster ", i), adj = 0.05, line = -1.2, col.main=darken(cols[i], 0.5))
+}
+
+```
+
+Note that the dendrogram has to be split into 12 subtrees for readability. My apologies for not including the native Finnish in these visualizations, which I fould difficult due to spacing and formating restrictions. After I consulted a native speaker, it became clear that the original Finnish words are often more clearly thematically related than the English translations. Out of context, this is difficult to detect when only given a superficial gloss. 
+
+A second, complex approach was to cluster the original k=12 kmeans clusters into subclusters, then cluster the 12 original centroids into superclusters, and assign RGB values based on functions of the 3-tiered cluster assignment.
+
+```{r}
+subclust_plot
+```
+
+It is questionable whether this method is in any way better than kmeans performed with a higher k, but I didn't take the opportunity to test this. Breaking up the k=12 clusters did result in more refined subclusters, although assigning colors to these clusters in a visually clear is an additional challenge. 
+
+# Summary
+
+## Findings
+
+Compared to the embeddings used from the Finnish dialogue, the relationships between words here are less obvious, at least to a non-native eye. In the case of tSNE with low perplexity and the default UMAP reductions, many clusters are contain logical patterns: 
+
+1. "discuss, prioritize, represent, document" represent formal business vocabulary.
+2. "threaten, violate, mock, hate" represent connotatively negative and aggressive words.
+3. "put, toss, fling, whip, peal" are transitive, physical actions related to cooking.
+4. "pump, flow, drill" are related to extraction of liquid from the earth.
+
+However, these clusters as well as others contain noise and nonsensical outliers, while some clusters appear to contain unrelated words entirely.  Perhaps a fluent speaker could see clearer relationships between some of the clustered words as they are typically used in context: I would certainly appreciate some commentary.
+
+Personally, I prefer the split hierarchical clustering for showing nearest relationships and building these up into larger subgroups.
+
+## Limitations
+
+Fastext vectors are calculated from immediate context and subwords, which doesn't account for synonymy in the theoretical sense or global contextual relationships at the document level. Perhaps this is why the dialogue project delivered more dense clusters: the words from the dialogue, representing a wide range of word classes and inflectional forms, collocate with a higher probability, and the pretrained embeddings for the word forms are naturally closer together, as the tokens have been taken directly from an authentic context. 
+
+While it makes sense intuitively that some nouns may cluster nicely, verbs, especially when limited to one inflectional form, tend to be 'lone wolves' in the sense that they are the scaffolding on which grammatical constructions are built and are less likely to co-occur with other lemmas in a computational window of limited length. This might explain why these clusters are less dense than the mixed tokens from the dialogue. 
+
+Although I wanted to push the limits of visualization from 2D to 3D, it's not apparent that anything was gained by doing this. In fact, if the third dimension spreads out related items which would have otherwise been clustered, it may have actually introduced noise, especially if the variance captured by the third dimension was quite a bit lower than dimensions 1 and 2. For this reason, captured variance, which I only assessed for PCA, would be worth investigating further.
+
+Also, it has to be underscored that visualization, though it can help with insights, is no more informative (less informative, in my opinion) than a dataframe with multilevel sorting in the case of word vectors. Dataframes can show us Gaussian clusters along each of the reduced dimensions independently, giving us insight as to what semantic features the dimension itself approximates. When plotted in 2D or 3D, the visual interaction of these features can dilute the strength of their relationships along a single dimension. Below is a multiple Gaussian clustering of one component using mixtools library.
+
+```{r include=FALSE}
+library(mixtools)
+
+k <- 6
+d <- normalmixEM(tsne_pca_low$tSNE1.PCA.low, k=k, maxit=1000, epsilon=0.001)
+x <- seq(-28, 25, 0.01)
+```
+```{r}
+hist(
+  tsne_pca_low$tSNE1.PCA.low, 
+  breaks=50, 
+  probability=TRUE, 
+  main='tSNE with Low Perplexity: 1st Component', 
+  xlab = 'Component Value',
+  ylim = c(0,0.06))
+
+for (i in 1:k) {
+  polygon(x, dunif(x,
+        min = d$mu[i]-d$sigma[i], 
+        max = d$mu[i]+d$sigma[i]),
+        col=scales::alpha(brewer.pal(k, 'Set3')[i], alpha=0.5),
+        border=NA
+        )
+}
+
+```
+
+# References
+
+Please reference .bibtex in the GitHub repository. 
