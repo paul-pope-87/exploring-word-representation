@@ -1,4 +1,4 @@
-# word-barf
+# exploring-word-representations
 Projects with word embeddings
 
 
